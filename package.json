@@ -1,0 +1,16 @@
+{
+  "name": "bshh",
+  "version": "1.0.0",
+  "description": "助贷员工端 H5 —— 客户管理与银行信贷产品智能匹配（前台）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js",
+    "precheck": "bash deploy/precheck.sh"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {},
+  "private": true
+}
