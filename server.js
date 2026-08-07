@@ -289,7 +289,13 @@ var server = http.createServer(function(req, res) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('404 Not Found: ' + urlPath);
     } else {
-      res.writeHead(200, { 'Content-Type': contentType });
+      // 显式 Content-Length 避免 chunked 编码在某些网络下被截断
+      var cache = ext === '.html' ? 'no-cache, no-store, must-revalidate' : 'public, max-age=86400';
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Length': data.length,
+        'Cache-Control': cache,
+      });
       res.end(data);
     }
   });

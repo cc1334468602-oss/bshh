@@ -196,6 +196,18 @@ server {
     client_max_body_size 10m;
     gzip on; gzip_min_length 1k; gzip_comp_level 4;
     gzip_types text/plain text/css application/json application/javascript text/xml image/svg+xml;
+
+    # 静态资源直接走 Nginx 磁盘，避免 Node chunked 传输在某些网络下被截断
+    location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|woff2?)\$ {
+        root /var/www/bshh;
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800";
+    }
+    location = /index.html {
+        root /var/www/bshh;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
     location / {
         proxy_pass http://127.0.0.1:9191;
         proxy_http_version 1.1;
@@ -203,6 +215,12 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 4k;
     }
     location ~ /\. { deny all; }
     location = /api/health { proxy_pass http://127.0.0.1:9191; access_log off; }
@@ -235,6 +253,18 @@ server {
     client_max_body_size 10m;
     gzip on; gzip_min_length 1k; gzip_comp_level 4;
     gzip_types text/plain text/css application/json application/javascript text/xml image/svg+xml;
+
+    # 静态资源直接走 Nginx 磁盘
+    location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|woff2?)\$ {
+        root /var/www/bshh;
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800";
+    }
+    location = /index.html {
+        root /var/www/bshh;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
     location / {
         proxy_pass http://127.0.0.1:9191;
         proxy_http_version 1.1;
@@ -242,6 +272,12 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 4k;
     }
     location ~ /\. { deny all; }
     location = /api/health { proxy_pass http://127.0.0.1:9191; access_log off; }
