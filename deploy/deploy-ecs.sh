@@ -5,8 +5,9 @@
 # 用法：以 root 登录 ECS 后执行   bash deploy-ecs.sh
 #
 # 特性：
-#  - 域名 HTTPS：wxbshh.com(前台) / admin.wxbshh.com(后台)，需先放好 SSL 证书
-#  - 备案前回退：未备案或证书未放时，可用 IP:8080(前台) / IP:9292(后台) 访问
+#  - 前台域名 HTTPS：wxbshh.com（需放好 SSL 证书 + ICP 备案）
+#  - 后台走 HTTP：IP:9292 + Basic Auth（不依赖证书/子域，避开证书不匹配，省事）
+#  - 备案前回退：未备案时前台也可用 IP:8080 访问
 #  - 简道云凭证【不写入本脚本】，部署后请在后台「简道云接口」页面填写
 #
 # ⚠ 前置：域名须 ICP 备案 + DNS A 记录指向本机，否则大陆无法用域名访问 80/443
@@ -26,9 +27,11 @@ ADMIN_PASS="$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9' | head -c 16)"
 SSL_DIR="/etc/nginx/ssl"
 SSL_CERT="$SSL_DIR/$DOMAIN.fullchain.pem"
 SSL_KEY="$SSL_DIR/$DOMAIN.key"
-# 后台证书（默认复用前台证书；若为独立证书，部署前 export SSL_CERT_ADMIN / SSL_KEY_ADMIN）
-SSL_CERT_ADMIN="${SSL_CERT_ADMIN:-$SSL_CERT}"
-SSL_KEY_ADMIN="${SSL_KEY_ADMIN:-$SSL_KEY}"
+# 后台默认走 HTTP（IP:9292），不需要证书。
+# 如日后要给后台也上 HTTPS（独立证书 + 子域），先 export ENABLE_ADMIN_HTTPS=1 与
+# SSL_CERT_ADMIN / SSL_KEY_ADMIN 后重跑本脚本即可。
+SSL_CERT_ADMIN="${SSL_CERT_ADMIN:-}"
+SSL_KEY_ADMIN="${SSL_KEY_ADMIN:-}"
 
 FRONT_IP_PORT=8080    # 备案前用 IP 访问前台
 ADMIN_IP_PORT=9292    # 备案前用 IP 访问后台
@@ -133,7 +136,10 @@ htpasswd -bc /etc/nginx/.htpasswd "$ADMIN_USER" "$ADMIN_PASS" >/dev/null 2>&1
 
 front_cert_ok=false; admin_cert_ok=false
 [ -f "$SSL_CERT" ] && [ -f "$SSL_KEY" ] && front_cert_ok=true
-[ -f "$SSL_CERT_ADMIN" ] && [ -f "$SSL_KEY_ADMIN" ] && admin_cert_ok=true
+# 后台默认只走 HTTP；仅在显式 ENABLE_ADMIN_HTTPS=1 且证书齐全时才启用 443
+if [ "${ENABLE_ADMIN_HTTPS:-0}" = "1" ] && [ -n "$SSL_CERT_ADMIN" ] && [ -f "$SSL_CERT_ADMIN" ] && [ -f "$SSL_KEY_ADMIN" ]; then
+  admin_cert_ok=true
+fi
 
 cat > /etc/nginx/conf.d/bshh.conf <<NGINX
 # ===== 备案前：用 IP:${FRONT_IP_PORT} 访问（无需域名/备案）=====
@@ -219,11 +225,6 @@ server {
     location = /api/health { proxy_pass http://127.0.0.1:9192; access_log off; }
 }
 
-server {
-    listen 80;
-    server_name ${ADMIN_HOST};
-    return 301 https://\$host\$request_uri;
-}
 NGINX
 
 if $admin_cert_ok; then
@@ -280,23 +281,21 @@ echo "【备案前 · IP 访问（立即可用）】"
 echo "  前台： http://${PUBLIC_IP}:${FRONT_IP_PORT}/"
 echo "  后台： http://${PUBLIC_IP}:${ADMIN_IP_PORT}/   (账号 $ADMIN_USER / 密码 $ADMIN_PASS)"
 echo ""
-if $front_cert_ok && $admin_cert_ok; then
-  green "【证书已检测到 · 域名 HTTPS 已启用】"
+if $front_cert_ok; then
+  green "【前台 SSL 证书已检测到 · wxbshh.com HTTPS 已就绪（需先 ICP 备案）】"
   echo "  前台： https://${FRONT_HOST}/"
-  echo "  后台： https://${ADMIN_HOST}/"
 else
-  yellow "【SSL 证书尚未放置 · 域名 HTTPS 暂未启用】"
-  echo "  请把证书放到："
-  echo "    前台/后台：$SSL_CERT 与 $SSL_KEY"
-  echo "    （若后台用独立证书，export SSL_CERT_ADMIN / SSL_KEY_ADMIN 后重跑本脚本）"
+  yellow "【前台 SSL 证书尚未放置 · 域名 HTTPS 暂未启用】"
+  echo "  请把 wxbshh.com 证书放到："
+  echo "    $SSL_CERT  与  $SSL_KEY"
   echo "  放好后执行：  nginx -s reload"
 fi
 echo ""
 yellow "上线前必做："
 echo "  1) ICP 备案：阿里云控制台提交 wxbshh.com 备案（未备案大陆无法用域名访问 80/443）"
-echo "  2) DNS：将 wxbshh.com 与 admin.wxbshh.com 的 A 记录指向 $PUBLIC_IP"
-echo "  3) 证书：确保证书覆盖 admin.wxbshh.com（用 SAN 或 *.wxbshh.com 通配符），否则后台子域 HTTPS 报证书不匹配"
-echo "  4) 阿里云安全组：放行 80 / 443 / $FRONT_IP_PORT / $ADMIN_IP_PORT"
-echo "  5) 浏览器开后台，登录后在「简道云接口」页面填写 API Key / App ID / 各 entry_id"
-echo "  6) 部署后请修改 ECS root 密码（本会话中曾出现）；建议后台再加 IP 白名单"
+echo "  2) DNS：将 wxbshh.com 的 A 记录指向 $PUBLIC_IP（后台用 IP，无需配子域解析）"
+echo "  3) 安全组：放行 80 / 443 / $FRONT_IP_PORT / $ADMIN_IP_PORT"
+echo "  4) 浏览器开后台 http://${PUBLIC_IP}:${ADMIN_IP_PORT}/ ，登录后在「简道云接口」页填写 API Key / App ID / 各 entry_id"
+echo "  5) 部署后请修改 ECS root 密码（本会话中曾出现）；后台建议再加 IP 白名单（见 bshhadmin.conf 注释）"
+echo "  6) 前台若用 https，证书仅覆盖 wxbshh.com 即可（后台走 HTTP，不涉及子域证书）"
 echo ""
