@@ -32,8 +32,16 @@ echo ""; green ">>> [1/8] 系统更新与基础依赖"; echo ""
 
 echo ""; green ">>> [2/8] 安装 Node.js 20 (LTS)"; echo ""
 if ! command -v node >/dev/null 2>&1; then
-  curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-  dnf -y install nodejs
+  if curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - && dnf -y install nodejs; then
+    echo "  ✓ NodeSource 安装成功"
+  else
+    yellow "  NodeSource 失败，改用官方二进制包安装 ..."
+    VER=$(curl -s https://registry.npmmirror.com/-/binary/node/ | grep -oE 'v20\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+    echo "  选定版本 $VER"
+    curl -fsSL "https://registry.npmmirror.com/-/binary/node/$VER/node-$VER-linux-x64.tar.xz" -o /tmp/node.tar.xz
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+    rm -f /tmp/node.tar.xz
+  fi
 fi
 node -v; npm -v
 
