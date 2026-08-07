@@ -76,8 +76,51 @@ pm2 -v
 
 echo ""; green ">>> [4/8] 克隆代码仓库"; echo ""
 mkdir -p /var/www
-[ -d "$FRONT_DIR" ] || git clone "$FRONT_REPO" "$FRONT_DIR"
-[ -d "$ADMIN_DIR" ] || git clone "$ADMIN_REPO" "$ADMIN_DIR"
+
+# 国内 ECS 直连 github.com 常中途断流，采用：
+#   1) 浅克隆(--depth 1，体积小、不易掉) 直连重试
+#   2) 公共代理镜像 ghproxy 重试
+#   3) codeload tarball 兜底（与 raw 同源 CDN，国内通常可达）
+clone_repo() {
+  local repo="$1" dir="$2"
+  rm -rf "$dir"
+  local base="https://github.com/$repo.git"
+  local sources=(
+    "$base"
+    "https://ghproxy.net/$base"
+    "https://mirror.ghproxy.com/$base"
+  )
+  for src in "${sources[@]}"; do
+    for try in 1 2 3; do
+      echo "  · 尝试 [$src] (第 $try 次)"
+      if timeout 90 git clone --depth 1 "$src" "$dir" 2>/dev/null; then
+        # 把 origin 还原为干净的 github 地址，便于后续 git pull / update.sh
+        git -C "$dir" remote set-url origin "$base"
+        echo "  ✓ $repo 克隆成功"; return 0
+      fi
+      rm -rf "$dir"
+      sleep 2
+    done
+  done
+  # 兜底：codeload tarball
+  echo "  · 兜底：codeload tarball 下载 $repo"
+  local tb="https://codeload.github.com/$repo/tar.gz/refs/heads/main"
+  if curl -fsSL "$tb" -o /tmp/repo.tar.gz 2>/dev/null; then
+    local parent; parent="$(dirname "$dir")"
+    local name; name="$(basename "$repo" | cut -d/ -f2)"
+    if tar -xzf /tmp/repo.tar.gz -C "$parent" 2>/dev/null; then
+      [ -d "$parent/$name-main" ] && mv "$parent/$name-main" "$dir"
+    fi
+    rm -f /tmp/repo.tar.gz
+    if [ -d "$dir" ] && [ -f "$dir/server.js" ]; then
+      echo "  ✓ $repo tarball 解压成功"; return 0
+    fi
+  fi
+  return 1
+}
+
+clone_repo "cc1334468602-oss/bshh" "$FRONT_DIR"      || { red "  ✗ 前台仓库克隆失败，请检查 ECS 到 GitHub 的网络或配置代理后重跑本脚本"; exit 1; }
+clone_repo "cc1334468602-oss/bshhadmin" "$ADMIN_DIR" || { red "  ✗ 后台仓库克隆失败，请检查 ECS 到 GitHub 的网络或配置代理后重跑本脚本"; exit 1; }
 
 echo ""; green ">>> [5/8] 生成配置（.env + 共享 jdy-config.json）"; echo ""
 cat > "$FRONT_DIR/.env" <<'EOF'
