@@ -83,6 +83,10 @@ mkdir -p /var/www
 #   3) codeload tarball 兜底（与 raw 同源 CDN，国内通常可达）
 clone_repo() {
   local repo="$1" dir="$2"
+  # 已克隆过（含 server.js）则跳过，支持手动克隆 / 重复执行本脚本
+  if [ -d "$dir" ] && [ -f "$dir/server.js" ]; then
+    echo "  ✓ $repo 已存在，跳过克隆"; return 0
+  fi
   rm -rf "$dir"
   local base="https://github.com/$repo.git"
   local sources=(
