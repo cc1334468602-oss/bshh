@@ -4,21 +4,41 @@
 # 适用：Alibaba Cloud Linux / CentOS / RHEL 系（全新机器）
 # 用法：以 root 登录 ECS 后执行   bash deploy-ecs.sh
 #
-# 脚本会自动：装依赖 → 克隆两仓库 → 生成配置 → PM2 启动 → Nginx 反代 → 放端口
-# 简道云凭证【不写入本脚本】，部署后请在后台网页「简道云接口」页面填写。
+# 特性：
+#  - 域名 HTTPS：wxbshh.com(前台) / admin.wxbshh.com(后台)，需先放好 SSL 证书
+#  - 备案前回退：未备案或证书未放时，可用 IP:8080(前台) / IP:9292(后台) 访问
+#  - 简道云凭证【不写入本脚本】，部署后请在后台「简道云接口」页面填写
+#
+# ⚠ 前置：域名须 ICP 备案 + DNS A 记录指向本机，否则大陆无法用域名访问 80/443
 # ============================================================
 set -e
 
+# ===================== 可配置项 =====================
+DOMAIN="wxbshh.com"
+ADMIN_SUB="admin"
+FRONT_HOST="$DOMAIN"                      # 前台域名：wxbshh.com
+ADMIN_HOST="$ADMIN_SUB.$DOMAIN"          # 后台域名：admin.wxbshh.com
+PUBLIC_IP="121.43.194.150"
+
 ADMIN_USER="admin"
 ADMIN_PASS="$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9' | head -c 16)"
+
+SSL_DIR="/etc/nginx/ssl"
+SSL_CERT="$SSL_DIR/$DOMAIN.fullchain.pem"
+SSL_KEY="$SSL_DIR/$DOMAIN.key"
+# 后台证书（默认复用前台证书；若为独立证书，部署前 export SSL_CERT_ADMIN / SSL_KEY_ADMIN）
+SSL_CERT_ADMIN="${SSL_CERT_ADMIN:-$SSL_CERT}"
+SSL_KEY_ADMIN="${SSL_KEY_ADMIN:-$SSL_KEY}"
+
+FRONT_IP_PORT=8080    # 备案前用 IP 访问前台
+ADMIN_IP_PORT=9292    # 备案前用 IP 访问后台
+
 SHARED_DIR="/var/www/shared"
 SHARED_CONFIG="$SHARED_DIR/jdy-config.json"
 FRONT_REPO="https://github.com/cc1334468602-oss/bshh.git"
 ADMIN_REPO="https://github.com/cc1334468602-oss/bshhadmin.git"
 FRONT_DIR="/var/www/bshh"
 ADMIN_DIR="/var/www/bshhadmin"
-ADMIN_PORT=9292
-PUBLIC_IP="121.43.194.150"
 
 green(){ echo -e "\033[32m$1\033[0m"; }
 yellow(){ echo -e "\033[33m$1\033[0m"; }
@@ -107,58 +127,139 @@ cd "$ADMIN_DIR" && pm2 start ecosystem.config.js
 pm2 save
 (pm2 startup systemd -u root --hp /root >/dev/null 2>&1) || true
 
-echo ""; green ">>> [7/8] 配置 Nginx 反代"; echo ""
+echo ""; green ">>> [7/8] 配置 Nginx（域名 HTTPS + 备案前 IP 回退）"; echo ""
+mkdir -p "$SSL_DIR"; chmod 700 "$SSL_DIR"
 htpasswd -bc /etc/nginx/.htpasswd "$ADMIN_USER" "$ADMIN_PASS" >/dev/null 2>&1
 
-cat > /etc/nginx/conf.d/bshh.conf <<'NGINX'
+front_cert_ok=false; admin_cert_ok=false
+[ -f "$SSL_CERT" ] && [ -f "$SSL_KEY" ] && front_cert_ok=true
+[ -f "$SSL_CERT_ADMIN" ] && [ -f "$SSL_KEY_ADMIN" ] && admin_cert_ok=true
+
+cat > /etc/nginx/conf.d/bshh.conf <<NGINX
+# ===== 备案前：用 IP:${FRONT_IP_PORT} 访问（无需域名/备案）=====
 server {
-    listen 80;
-    server_name 121.43.194.150;
+    listen ${FRONT_IP_PORT};
+    server_name _;
     client_max_body_size 10m;
     gzip on; gzip_min_length 1k; gzip_comp_level 4;
     gzip_types text/plain text/css application/json application/javascript text/xml image/svg+xml;
     location / {
         proxy_pass http://127.0.0.1:9191;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location ~ /\. { deny all; }
+    location = /api/health { proxy_pass http://127.0.0.1:9191; access_log off; }
+}
+
+# ===== HTTP 80 → 跳转 HTTPS（备案 + 证书就位后生效）=====
+server {
+    listen 80;
+    server_name ${FRONT_HOST};
+    return 301 https://\$host\$request_uri;
+}
+NGINX
+
+if $front_cert_ok; then
+cat >> /etc/nginx/conf.d/bshh.conf <<NGINX
+
+server {
+    listen 443 ssl http2;
+    server_name ${FRONT_HOST};
+    ssl_certificate     ${SSL_CERT};
+    ssl_certificate_key ${SSL_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    client_max_body_size 10m;
+    gzip on; gzip_min_length 1k; gzip_comp_level 4;
+    gzip_types text/plain text/css application/json application/javascript text/xml image/svg+xml;
+    location / {
+        proxy_pass http://127.0.0.1:9191;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
     location ~ /\. { deny all; }
     location = /api/health { proxy_pass http://127.0.0.1:9191; access_log off; }
 }
 NGINX
+fi
 
-cat > /etc/nginx/conf.d/bshhadmin.conf <<'NGINX'
+cat > /etc/nginx/conf.d/bshhadmin.conf <<NGINX
+# ===== 备案前：用 IP:${ADMIN_IP_PORT} 访问（Basic Auth）=====
 server {
-    listen 9292;
-    server_name 121.43.194.150;
+    listen ${ADMIN_IP_PORT};
+    server_name _;
     client_max_body_size 10m;
     gzip on; gzip_min_length 1k; gzip_comp_level 4;
     gzip_types text/plain text/css application/json application/javascript text/xml image/svg+xml;
-
-    # 后台访问控制：Basic Auth（必开）+ IP 白名单（强烈建议再加一层）
     auth_basic "Admin Restricted";
     auth_basic_user_file /etc/nginx/.htpasswd;
-    # allow 你的公司固定出口IP;   # ★ 取消注释并改为你的办公网络公网 IP
-    # deny all;
-
     location / {
         proxy_pass http://127.0.0.1:9192;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location ~* (jdy-config\.json|\.env) { deny all; return 403; }
+    location ~ /\. { deny all; }
+    location = /api/health { proxy_pass http://127.0.0.1:9192; access_log off; }
+}
+
+server {
+    listen 80;
+    server_name ${ADMIN_HOST};
+    return 301 https://\$host\$request_uri;
+}
+NGINX
+
+if $admin_cert_ok; then
+cat >> /etc/nginx/conf.d/bshhadmin.conf <<NGINX
+
+server {
+    listen 443 ssl http2;
+    server_name ${ADMIN_HOST};
+    ssl_certificate     ${SSL_CERT_ADMIN};
+    ssl_certificate_key ${SSL_KEY_ADMIN};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    client_max_body_size 10m;
+    auth_basic "Admin Restricted";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+    # allow 你的公司固定出口IP; deny all;   # ★ 建议再加 IP 白名单
+    location / {
+        proxy_pass http://127.0.0.1:9192;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
     location ~* (jdy-config\.json|\.env) { deny all; return 403; }
     location ~ /\. { deny all; }
     location = /api/health { proxy_pass http://127.0.0.1:9192; access_log off; }
 }
 NGINX
+fi
 
-# SELinux：允许 nginx 连接上游（RHEL 系常见 502 的根因）
 if command -v setsebool >/dev/null 2>&1; then
   setsebool -P httpd_can_network_connect on 2>/dev/null || true
 fi
@@ -166,24 +267,36 @@ nginx -t && systemctl enable --now nginx
 
 echo ""; green ">>> [8/8] 防火墙放行"; echo ""
 (firewall-cmd --permanent --add-service=http >/dev/null 2>&1) || true
-(firewall-cmd --permanent --add-port=${ADMIN_PORT}/tcp >/dev/null 2>&1) || true
+(firewall-cmd --permanent --add-service=https >/dev/null 2>&1) || true
+(firewall-cmd --permanent --add-port=${FRONT_IP_PORT}/tcp >/dev/null 2>&1) || true
+(firewall-cmd --permanent --add-port=${ADMIN_IP_PORT}/tcp >/dev/null 2>&1) || true
 (firewall-cmd --reload >/dev/null 2>&1) || true
 
 echo ""
 green "=========================================="
 green "  部署完成！"
 green "=========================================="
-echo "前台访问： http://${PUBLIC_IP}/"
-echo "后台访问： http://${PUBLIC_IP}:${ADMIN_PORT}/"
-echo "后台账号： ${ADMIN_USER}"
-echo "后台密码： ${ADMIN_PASS}"
+echo "【备案前 · IP 访问（立即可用）】"
+echo "  前台： http://${PUBLIC_IP}:${FRONT_IP_PORT}/"
+echo "  后台： http://${PUBLIC_IP}:${ADMIN_IP_PORT}/   (账号 $ADMIN_USER / 密码 $ADMIN_PASS)"
 echo ""
-yellow "下一步（重要）："
-echo "  1) 阿里云控制台 → 该实例「安全组」→ 入方向放行 80 与 ${ADMIN_PORT} 端口"
-echo "     （源 0.0.0.0/0，或限定为你自己的 IP 更安全）"
-echo "  2) 浏览器打开后台，登录后在「简道云接口」页面填写 API Key / App ID / 各 entry_id"
-echo "  3) 保存后前台即时读取真实数据（无需重启）"
-echo "  4) 建议：后台再加 IP 白名单 + 后续上 HTTPS（Let's Encrypt 免费证书）"
+if $front_cert_ok && $admin_cert_ok; then
+  green "【证书已检测到 · 域名 HTTPS 已启用】"
+  echo "  前台： https://${FRONT_HOST}/"
+  echo "  后台： https://${ADMIN_HOST}/"
+else
+  yellow "【SSL 证书尚未放置 · 域名 HTTPS 暂未启用】"
+  echo "  请把证书放到："
+  echo "    前台/后台：$SSL_CERT 与 $SSL_KEY"
+  echo "    （若后台用独立证书，export SSL_CERT_ADMIN / SSL_KEY_ADMIN 后重跑本脚本）"
+  echo "  放好后执行：  nginx -s reload"
+fi
 echo ""
-yellow "安全提醒：本脚本登录用的 ECS root 密码请部署后修改；后台密码已随机生成请妥善保存。"
+yellow "上线前必做："
+echo "  1) ICP 备案：阿里云控制台提交 wxbshh.com 备案（未备案大陆无法用域名访问 80/443）"
+echo "  2) DNS：将 wxbshh.com 与 admin.wxbshh.com 的 A 记录指向 $PUBLIC_IP"
+echo "  3) 证书：确保证书覆盖 admin.wxbshh.com（用 SAN 或 *.wxbshh.com 通配符），否则后台子域 HTTPS 报证书不匹配"
+echo "  4) 阿里云安全组：放行 80 / 443 / $FRONT_IP_PORT / $ADMIN_IP_PORT"
+echo "  5) 浏览器开后台，登录后在「简道云接口」页面填写 API Key / App ID / 各 entry_id"
+echo "  6) 部署后请修改 ECS root 密码（本会话中曾出现）；建议后台再加 IP 白名单"
 echo ""
