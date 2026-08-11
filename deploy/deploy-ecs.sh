@@ -126,8 +126,17 @@ clone_repo() {
 clone_repo "cc1334468602-oss/bshh" "$FRONT_DIR"      || { red "  ✗ 前台仓库克隆失败，请检查 ECS 到 GitHub 的网络或配置代理后重跑本脚本"; exit 1; }
 clone_repo "cc1334468602-oss/bshhadmin" "$ADMIN_DIR" || { red "  ✗ 后台仓库克隆失败，请检查 ECS 到 GitHub 的网络或配置代理后重跑本脚本"; exit 1; }
 
+# 安装并初始化数据库（MariaDB / MySQL 兼容），幂等
+bash "$FRONT_DIR/deploy/setup-mysql.sh" || yellow "  ⚠ 数据库初始化未完成，应用将回退到 Mock/简道云数据，可在修复后重跑 setup-mysql.sh"
+
 echo ""; green ">>> [5/8] 生成配置（.env + 共享 jdy-config.json）"; echo ""
-cat > "$FRONT_DIR/.env" <<'EOF'
+# 读取数据库配置（由 setup-mysql.sh 生成）；若缺失则留空（应用自动回退 Mock）
+if [ -f /tmp/bshh_db.env ]; then
+  source /tmp/bshh_db.env
+else
+  DB_HOST=""; DB_PORT=""; DB_USER=""; DB_PASS=""; DB_NAME=""
+fi
+cat > "$FRONT_DIR/.env" <<EOF
 PORT=9191
 HOST=127.0.0.1
 JDY_CONFIG_PATH=/var/www/shared/jdy-config.json
@@ -140,15 +149,25 @@ JDY_ENTRY_CASHFLOW=
 JDY_ENTRY_INTENTION=
 JDY_ENTRY_FOLLOWUP=
 JDY_ENTRY_REPAYMENT=
+DB_HOST=${DB_HOST}
+DB_PORT=${DB_PORT}
+DB_USER=${DB_USER}
+DB_PASS=${DB_PASS}
+DB_NAME=${DB_NAME}
 EOF
 chmod 600 "$FRONT_DIR/.env"
 
-cat > "$ADMIN_DIR/.env" <<'EOF'
+cat > "$ADMIN_DIR/.env" <<EOF
 PORT=9192
 HOST=127.0.0.1
 JDY_CONFIG_PATH=/var/www/shared/jdy-config.json
 JDY_API_KEY=
 JDY_APP_ID=
+DB_HOST=${DB_HOST}
+DB_PORT=${DB_PORT}
+DB_USER=${DB_USER}
+DB_PASS=${DB_PASS}
+DB_NAME=${DB_NAME}
 EOF
 chmod 600 "$ADMIN_DIR/.env"
 
@@ -171,7 +190,11 @@ EOF
 chmod 600 "$SHARED_CONFIG"
 green "  ✓ 共享配置已生成（凭证待后台页面填写）"
 
-echo ""; green ">>> [6/8] 启动服务 (PM2)"; echo ""
+echo ""; green ">>> [6/8] 安装依赖并启动服务 (PM2)"; echo ""
+echo "  · 安装前台依赖"
+cd "$FRONT_DIR" && npm install --registry=https://registry.npmmirror.com >/dev/null 2>&1 || npm install
+echo "  · 安装后台依赖"
+cd "$ADMIN_DIR" && npm install --registry=https://registry.npmmirror.com >/dev/null 2>&1 || npm install
 cd "$FRONT_DIR" && pm2 start ecosystem.config.js
 cd "$ADMIN_DIR" && pm2 start ecosystem.config.js
 pm2 save
@@ -379,6 +402,7 @@ echo "  1) ICP 备案：阿里云控制台提交 wxbshh.com 备案（未备案�
 echo "  2) DNS：将 wxbshh.com 的 A 记录指向 $PUBLIC_IP（后台用 IP，无需配子域解析）"
 echo "  3) 安全组：放行 80 / 443 / $FRONT_IP_PORT / $ADMIN_IP_PORT"
 echo "  4) 浏览器开后台 http://${PUBLIC_IP}:${ADMIN_IP_PORT}/ ，登录后在「简道云接口」页填写 API Key / App ID / 各 entry_id"
+echo "  4b) 数据库已自动初始化（MariaDB），库名 bshh_db / 账号 bshh_user / 密码 Bshh@2026（固定值，已写入 .env）；如需图形化管理可自行安装 phpMyAdmin 等"
 echo "  5) 部署后请修改 ECS root 密码（本会话中曾出现）；后台建议再加 IP 白名单（见 bshhadmin.conf 注释）"
 echo "  6) 前台若用 https，证书仅覆盖 wxbshh.com 即可（后台走 HTTP，不涉及子域证书）"
 echo ""

@@ -61,11 +61,13 @@ window.App = (function () {
     renderHome();
     renderProfile();
     initChat();
-    loadJdyCustomers();
+    loadAppData();
   }
 
-  function loadJdyCustomers() {
-    fetch('/api/jdy/customers', {
+  // ========= 统一数据加载（MySQL 优先，失败回退 Mock） =========
+  function loadAppData() {
+    // 1) 客户列表（数据库）
+    fetch('/api/db/customers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -73,10 +75,39 @@ window.App = (function () {
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (res.success && res.data && res.data.length > 0) {
-          state.customers = res.data.map(adaptJdyCustomer);
-          state.useJdyData = true;
-          renderHome();
+          state.customers = res.data;
+          state.useDbData = true;
         }
+        renderHome();
+      })
+      .catch(function () { /* 保留 Mock 数据 */ renderHome(); });
+
+    // 2) 银行产品库
+    fetch('/api/db/products', { method: 'GET' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res.success && res.data && res.data.length > 0) {
+          window.MOCK_DATA.PRODUCTS = res.data; // 注入匹配引擎
+        }
+      })
+      .catch(function () {});
+
+    // 3) 匹配规则
+    fetch('/api/db/match-rules', { method: 'GET' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res.success && res.data) {
+          window.MOCK_DATA.MATCH_RULES = res.data; // 注入匹配引擎
+        }
+      })
+      .catch(function () {});
+
+    // 4) 系统通知
+    var empId = state.currentUser ? state.currentUser.id : '';
+    fetch('/api/db/notifications?employeeId=' + encodeURIComponent(empId), { method: 'GET' })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res.success && res.data) { state.notifications = res.data; }
       })
       .catch(function () {});
   }
@@ -124,14 +155,36 @@ window.App = (function () {
     if (!phone || phone.length !== 11) { alert('请输入11位手机号'); return; }
     if (!code || code.length !== 6) { alert('请输入6位验证码'); return; }
 
-    const employee = D.EMPLOYEES.find(e => e.phone === phone);
-    if (!employee) { alert('该手机号未注册，请联系管理员'); return; }
+    // 优先走数据库登录；数据库不可用时回退到本地 Mock 员工
+    fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: phone, code: code }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res.success && res.user) {
+          finishLogin(res.user);
+          return;
+        }
+        // 数据库无此账号或不可用 → 回退 Mock
+        fallbackLogin(phone);
+      })
+      .catch(function () { fallbackLogin(phone); });
+  }
 
+  function finishLogin(user) {
     const token = 'mock_token_' + Date.now();
     localStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(USER_KEY, JSON.stringify(employee));
-    state.currentUser = employee;
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    state.currentUser = user;
     showApp();
+  }
+
+  function fallbackLogin(phone) {
+    const employee = D.EMPLOYEES.find(e => e.phone === phone);
+    if (!employee) { alert('该手机号未注册，请联系管理员'); return; }
+    finishLogin(employee);
   }
 
   function sendVerifyCode() {
@@ -396,6 +449,12 @@ window.App = (function () {
       c.followUps.unshift({ time: new Date().toISOString(), note: note.trim() });
       c.lastFollowUp = new Date().toISOString();
       c.status = c.status === 'new' ? 'following' : c.status;
+      // 落库：新增跟进记录
+      fetch('/api/db/followups/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customerId: cid, employeeId: state.currentUser ? state.currentUser.id : '', note: note.trim() }),
+      }).catch(function () {});
       alert('备注已保存');
       renderCustomerList();
       renderKPI();
@@ -581,17 +640,30 @@ window.App = (function () {
 
     // 同步到对话历史
     const convTitle = '与' + c.name + '的匹配对话';
+    const convMessages = [
+      { role: 'user', text: '帮我为' + c.name + '匹配产品' },
+      { role: 'assistant', text: '为您找到以下匹配方案：', strategies: buildStrategiesForChat(state.currentMatchResult) },
+    ];
     state.conversations.unshift({
       id: 'CV' + Date.now(),
       title: convTitle,
       time: formatDateTime(new Date().toISOString()),
       customerName: c.name,
       strategyCount: banks.length,
-      messages: [
-        { role: 'user', text: '帮我为' + c.name + '匹配产品' },
-        { role: 'assistant', text: '为您找到以下匹配方案：', strategies: buildStrategiesForChat(state.currentMatchResult) },
-      ],
+      messages: convMessages,
     });
+
+    // 落库：匹配记录 + 对话历史
+    fetch('/api/db/matches/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerId: c.id, employeeId: state.currentUser ? state.currentUser.id : '', banks: banks.join(' / '), note: '', result: state.currentMatchResult }),
+    }).catch(function () {});
+    fetch('/api/db/conversations/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employeeId: state.currentUser ? state.currentUser.id : '', customerName: c.name, title: convTitle, messages: convMessages }),
+    }).catch(function () {});
 
     alert('方案已确认！客户状态已更新为"已匹配"，对话记录已同步到"我的助手"');
     closeMatchDrawer();
