@@ -144,7 +144,28 @@ SQL
   green "  ✓ 应用账号 ${DB_USER} 已就绪（localhost / 127.0.0.1）"
 }
 
-run_as_root
+# 5) 分支：应用账号已可用则跳过 root 管理（库/账号假定已就绪）；
+#     否则必须拿到 root 才能建库/建账号/授权；两者皆无则报错退出。
+if [ "$APP_OK" = "1" ]; then
+  green "  ✓ 应用账号 ${DB_USER} 可连接，跳过 root 管理步骤"
+elif [ "$ROOT_OK" = "1" ]; then
+  run_as_root
+else
+  red "  ✗ 既无法以 root 登录，应用账号也不可用，无法初始化数据库"
+  echo ""
+  yellow "  请先手动创建数据库与账号（用 root 或已有管理员执行）："
+  cat <<SQL
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'127.0.0.1';
+FLUSH PRIVILEGES;
+SQL
+  echo ""
+  yellow "  创建后重跑本脚本，应用账号可连接时将继续导入表结构。"
+  exit 1
+fi
 
 # 6) 导入/校验表结构（可用 root 或应用账号）
 IMPORTER="$ROOT_MYSQL"
