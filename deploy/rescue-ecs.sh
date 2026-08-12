@@ -57,10 +57,16 @@ for item in "${REPOS[@]}"; do
   # 移动到目标位置
   mv "$SRC" "$TARGET"
 
-  # 还原 .env（保留旧配置，避免 JDY 密钥丢失）
+  # 还原 .env（保留旧配置，避免 JDY 密钥丢失；若本次无备份，则找历史备份）
   if [ -f "$BACKUP/.env" ]; then
     cp "$BACKUP/.env" "$TARGET/.env"
     green "  ✓ 已还原 .env"
+  else
+    LATEST_ENV=$(ls -td "$BASE/$DIR.bak."*/.env 2>/dev/null | head -1)
+    if [ -f "$LATEST_ENV" ]; then
+      cp "$LATEST_ENV" "$TARGET/.env"
+      green "  ✓ 已从历史备份还原 .env"
+    fi
   fi
 
   # 若 .env 仍不存在，创建默认最小配置
