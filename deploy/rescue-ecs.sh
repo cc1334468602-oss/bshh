@@ -28,7 +28,7 @@ fi
 for item in "${REPOS[@]}"; do
   IFS='|' read -r DIR SLUG PORT <<< "$item"
   TARGET="$BASE/$DIR"
-  TARBALL="https://codeload.github.com/$SLUG/tarball/refs/heads/main"
+  TARBALL="https://codeload.github.com/$SLUG/tar.gz/refs/heads/main"
   TMPD=$(mktemp -d)
 
   echo ""
