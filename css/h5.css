@@ -95,7 +95,7 @@ ul, ol { list-style: none; }
   padding: 24px;
 }
 .login-logo { font-size: 48px; margin-bottom: 8px; }
-.login-logo img { width: 120px; max-width: 55%; max-height: 56px; object-fit: contain; display: block; margin: 0 auto; }
+.login-logo img { width: 180px; max-width: 75%; max-height: 84px; object-fit: contain; display: block; margin: 0 auto; }
 .login-title { color: #fff; font-size: 22px; font-weight: 700; margin-bottom: 4px; }
 .login-subtitle { color: rgba(255,255,255,0.7); font-size: 13px; margin-bottom: 32px; }
 .login-card {
