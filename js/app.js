@@ -22,6 +22,7 @@ window.App = (function () {
     currentMatchCustomerId: null,
     currentCustomerId: null,
     verifyCooldown: 0,
+    loginMode: 'code', // 'code' = 验证码登录, 'password' = 密码登录
     customers: D.CUSTOMERS, // 直接引用Mock数据
     conversations: D.CONVERSATIONS,
   };
@@ -149,17 +150,39 @@ window.App = (function () {
     };
   }
 
-  function doLogin() {
-    const phone = $('loginPhone').value.trim();
-    const code = $('loginCode').value.trim();
-    if (!phone || phone.length !== 11) { alert('请输入11位手机号'); return; }
-    if (!code || code.length !== 6) { alert('请输入6位验证码'); return; }
+  function switchLoginMode(mode) {
+    state.loginMode = mode;
+    $('tabCode').classList.toggle('active', mode === 'code');
+    $('tabPwd').classList.toggle('active', mode === 'password');
+    $('codeField').classList.toggle('hidden', mode !== 'code');
+    $('pwdField').classList.toggle('hidden', mode !== 'password');
+    $('loginHint').textContent = mode === 'code'
+      ? '演示账号：13800138001 / 验证码任意6位'
+      : '使用手机号 + 后台设置的密码登录（演示默认密码 123456）';
+  }
 
-    // 优先走数据库登录；数据库不可用时回退到本地 Mock 员工
+  function doLogin() {
+    const mode = state.loginMode || 'code';
+    const phone = $('loginPhone').value.trim();
+    if (!phone || phone.length !== 11) { alert('请输入11位手机号'); return; }
+
+    const payload = { phone: phone, type: mode };
+
+    if (mode === 'code') {
+      const code = $('loginCode').value.trim();
+      if (!code || code.length !== 6) { alert('请输入6位验证码'); return; }
+      payload.code = code;
+    } else {
+      const pwd = $('loginPwd').value.trim();
+      if (!pwd) { alert('请输入密码'); return; }
+      payload.password = pwd;
+    }
+
+    // 优先走数据库登录；数据库不可用时：验证码模式回退本地 Mock，密码模式直接失败（不回退，避免空密码绕过）
     fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: phone, code: code }),
+      body: JSON.stringify(payload),
     })
       .then(function (r) { return r.json(); })
       .then(function (res) {
@@ -167,10 +190,19 @@ window.App = (function () {
           finishLogin(res.user);
           return;
         }
-        // 数据库无此账号或不可用 → 回退 Mock
-        fallbackLogin(phone);
+        if (mode === 'code') {
+          fallbackLogin(phone);
+        } else {
+          alert(res.error || '登录失败');
+        }
       })
-      .catch(function () { fallbackLogin(phone); });
+      .catch(function () {
+        if (mode === 'code') {
+          fallbackLogin(phone);
+        } else {
+          alert('登录失败，请稍后重试');
+        }
+      });
   }
 
   function finishLogin(user) {
@@ -992,6 +1024,7 @@ window.App = (function () {
   return {
     init: init,
     doLogin: doLogin,
+    switchLoginMode: switchLoginMode,
     sendVerifyCode: sendVerifyCode,
     logout: logout,
     switchTab: switchTab,

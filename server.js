@@ -275,13 +275,25 @@ function handleApi(req, res, urlPath, body) {
   if (urlPath === '/api/auth/login' && req.method === 'POST') {
     var lp = {};
     try { lp = JSON.parse(body || '{}'); } catch (e) {}
-    db.query('SELECT id,name,phone,department FROM employees WHERE phone=?', [lp.phone || ''])
+    var loginType = lp.type || 'code';
+    db.query('SELECT id,name,phone,department,password_hash FROM employees WHERE phone=?', [lp.phone || ''])
       .then(function (rows) {
         if (!rows || rows.length === 0) {
           res.end(JSON.stringify({ success: false, error: '该手机号未注册，请联系管理员' }));
           return;
         }
         var emp = rows[0];
+        // 密码登录：校验密码哈希（员工密码以手机号为盐：sha256(phone + ':' + plain)）
+        if (loginType === 'password') {
+          if (!lp.password) {
+            res.end(JSON.stringify({ success: false, error: '请输入密码' }));
+            return;
+          }
+          if (!db.verifyPwd(emp.phone, lp.password, emp.password_hash)) {
+            res.end(JSON.stringify({ success: false, error: '密码错误' }));
+            return;
+          }
+        }
         res.end(JSON.stringify({
           success: true,
           token: 'mock_token_' + Date.now(),
